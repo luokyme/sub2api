@@ -45,23 +45,46 @@ func TestDeriveCompatPromptCacheKey_StableAcrossLaterTurns(t *testing.T) {
 	require.NotEmpty(t, k1)
 }
 
-func TestDeriveCompatPromptCacheKey_DiffersAcrossSessions(t *testing.T) {
+func TestDeriveCompatPromptCacheKey_ReusesAcrossDifferentFirstUsers(t *testing.T) {
 	req1 := &apicompat.ChatCompletionsRequest{
 		Model: "gpt-5.4",
 		Messages: []apicompat.ChatMessage{
+			{Role: "system", Content: mustRawJSON(t, `"You are helpful."`)},
 			{Role: "user", Content: mustRawJSON(t, `"Question A"`)},
 		},
 	}
 	req2 := &apicompat.ChatCompletionsRequest{
 		Model: "gpt-5.4",
 		Messages: []apicompat.ChatMessage{
+			{Role: "system", Content: mustRawJSON(t, `"You are helpful."`)},
 			{Role: "user", Content: mustRawJSON(t, `"Question B"`)},
 		},
 	}
 
 	k1 := deriveCompatPromptCacheKey(req1, "gpt-5.4")
 	k2 := deriveCompatPromptCacheKey(req2, "gpt-5.4")
-	require.NotEqual(t, k1, k2, "different first user messages should yield different keys")
+	require.Equal(t, k1, k2, "different first user messages should reuse the same stable-prefix key")
+}
+
+func TestDeriveCompatPromptCacheKey_DiffersAcrossSystems(t *testing.T) {
+	req1 := &apicompat.ChatCompletionsRequest{
+		Model: "gpt-5.4",
+		Messages: []apicompat.ChatMessage{
+			{Role: "system", Content: mustRawJSON(t, `"System A"`)},
+			{Role: "user", Content: mustRawJSON(t, `"Question A"`)},
+		},
+	}
+	req2 := &apicompat.ChatCompletionsRequest{
+		Model: "gpt-5.4",
+		Messages: []apicompat.ChatMessage{
+			{Role: "system", Content: mustRawJSON(t, `"System B"`)},
+			{Role: "user", Content: mustRawJSON(t, `"Question A"`)},
+		},
+	}
+
+	k1 := deriveCompatPromptCacheKey(req1, "gpt-5.4")
+	k2 := deriveCompatPromptCacheKey(req2, "gpt-5.4")
+	require.NotEqual(t, k1, k2, "different stable prefixes should still yield different keys")
 }
 
 func TestDeriveCompatPromptCacheKey_UsesResolvedSparkFamily(t *testing.T) {
@@ -102,7 +125,7 @@ func TestDeriveAnthropicCompatPromptCacheKey_StableAcrossLaterTurns(t *testing.T
 	require.NotEmpty(t, k1)
 }
 
-func TestDeriveAnthropicCompatPromptCacheKey_DiffersAcrossSessions(t *testing.T) {
+func TestDeriveAnthropicCompatPromptCacheKey_ReusesAcrossDifferentFirstUsers(t *testing.T) {
 	req1 := &apicompat.AnthropicRequest{
 		Model:  "claude-opus-4-6",
 		System: mustRawJSON(t, `[{"type":"text","text":"You are helpful."}]`),
@@ -120,7 +143,28 @@ func TestDeriveAnthropicCompatPromptCacheKey_DiffersAcrossSessions(t *testing.T)
 
 	k1 := deriveAnthropicCompatPromptCacheKey(req1, "gpt-5.4")
 	k2 := deriveAnthropicCompatPromptCacheKey(req2, "gpt-5.4")
-	require.NotEqual(t, k1, k2, "different first user messages should yield different anthropic compat keys")
+	require.Equal(t, k1, k2, "different first user messages should reuse the same stable-prefix key")
+}
+
+func TestDeriveAnthropicCompatPromptCacheKey_DiffersAcrossSystems(t *testing.T) {
+	req1 := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"System A"}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"Question A"}]`)},
+		},
+	}
+	req2 := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"System B"}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"Question A"}]`)},
+		},
+	}
+
+	k1 := deriveAnthropicCompatPromptCacheKey(req1, "gpt-5.4")
+	k2 := deriveAnthropicCompatPromptCacheKey(req2, "gpt-5.4")
+	require.NotEqual(t, k1, k2, "different stable prefixes should still yield different anthropic compat keys")
 }
 
 func TestDeriveAnthropicCompatPromptCacheKey_IgnoresReminderNoise(t *testing.T) {

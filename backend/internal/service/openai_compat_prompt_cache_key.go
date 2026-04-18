@@ -49,16 +49,10 @@ func deriveCompatPromptCacheKey(req *apicompat.ChatCompletionsRequest, mappedMod
 		}
 	}
 
-	firstUserCaptured := false
 	for _, msg := range req.Messages {
 		switch strings.TrimSpace(msg.Role) {
 		case "system":
 			seedParts = append(seedParts, "system="+normalizeCompatSeedJSON(msg.Content))
-		case "user":
-			if !firstUserCaptured {
-				seedParts = append(seedParts, "first_user="+normalizeCompatSeedJSON(msg.Content))
-				firstUserCaptured = true
-			}
 		}
 	}
 
@@ -93,21 +87,6 @@ func deriveAnthropicCompatPromptCacheKey(req *apicompat.AnthropicRequest, mapped
 	if len(req.System) > 0 {
 		seedParts = append(seedParts, "system="+normalizeCompatSeedJSON(stripAnthropicBillingHeaderRaw(req.System)))
 	}
-	firstUserCaptured := false
-	for _, msg := range req.Messages {
-		if strings.TrimSpace(msg.Role) != "user" {
-			continue
-		}
-		content := filterAnthropicCompatContentForKey(msg.Content)
-		if len(content) == 0 || string(content) == "[]" || string(content) == `""` {
-			continue
-		}
-		if !firstUserCaptured {
-			seedParts = append(seedParts, "first_user="+normalizeCompatSeedJSON(content))
-			firstUserCaptured = true
-		}
-	}
-
 	return compatPromptCacheKeyPrefix + hashSensitiveValueForLog(strings.Join(seedParts, "|"))
 }
 
