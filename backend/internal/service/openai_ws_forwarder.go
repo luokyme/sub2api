@@ -292,6 +292,17 @@ func resolveOpenAIWSSessionHeaders(c *gin.Context) openAIWSSessionHeaderResoluti
 			}
 		}
 	}
+	if c != nil {
+		if compatSessionSeed, ok := c.Get(openAICompatUpstreamSessionKey); ok {
+			if compatSessionID, ok := compatSessionSeed.(string); ok && strings.TrimSpace(compatSessionID) != "" {
+				trimmed := strings.TrimSpace(compatSessionID)
+				resolution.SessionID = trimmed
+				resolution.ConversationID = trimmed
+				resolution.SessionSource = "compat_prompt_cache_key"
+				resolution.ConversationSource = "compat_prompt_cache_key"
+			}
+		}
+	}
 	return resolution
 }
 

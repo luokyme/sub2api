@@ -33,7 +33,7 @@ Build the backend binary:
 
 ```bash
 cd backend
-go build -ldflags='-s -w -X main.Version=$(tr -d '"'"'\r\n'"'"' < ./cmd/server/VERSION)' -trimpath -o /tmp/sub2api-deploy ./cmd/server
+go build -tags embed -ldflags='-s -w -X main.Version=$(tr -d '"'"'\r\n'"'"' < ./cmd/server/VERSION)' -trimpath -o /tmp/sub2api-deploy ./cmd/server
 ```
 
 ### Frontend
@@ -52,8 +52,15 @@ This section describes the current binary deployment flow used for `luokyme.com`
 
 ```bash
 cd /home/lkm/ws/lkm/sub2api/backend
-go build -ldflags='-s -w -X main.Version=$(tr -d '"'"'\r\n'"'"' < ./cmd/server/VERSION)' -trimpath -o /tmp/sub2api-deploy ./cmd/server
+go build -tags embed -ldflags='-s -w -X main.Version=$(tr -d '"'"'\r\n'"'"' < ./cmd/server/VERSION)' -trimpath -o /tmp/sub2api-deploy ./cmd/server
 sha256sum /tmp/sub2api-deploy
+```
+
+If frontend assets changed, rebuild them before the backend build so `backend/internal/web/dist/` is up to date:
+
+```bash
+cd /home/lkm/ws/lkm/sub2api/frontend
+pnpm build
 ```
 
 ### 2. Upload the new binary

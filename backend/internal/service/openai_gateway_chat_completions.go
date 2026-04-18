@@ -165,6 +165,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return nil, fmt.Errorf("remarshal after codex transform: %w", err)
 		}
 	}
+	if compatPromptCacheInjected && account.Type == AccountTypeOAuth && c != nil && promptCacheKey != "" {
+		c.Set(openAICompatUpstreamSessionKey, promptCacheKey)
+	}
 
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)

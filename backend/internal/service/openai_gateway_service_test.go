@@ -219,6 +219,21 @@ func TestResolveOpenAIWSSessionHeaders_UsesClaudeCodeHeader(t *testing.T) {
 	require.Equal(t, "header_x_claude_code_session_id", resolution.ConversationSource)
 }
 
+func TestResolveOpenAIWSSessionHeaders_CompatPromptCacheKeyOverridesClientHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-session-123")
+	c.Set(openAICompatUpstreamSessionKey, "compat_cc_shared")
+
+	resolution := resolveOpenAIWSSessionHeaders(c)
+	require.Equal(t, "compat_cc_shared", resolution.SessionID)
+	require.Equal(t, "compat_cc_shared", resolution.ConversationID)
+	require.Equal(t, "compat_prompt_cache_key", resolution.SessionSource)
+	require.Equal(t, "compat_prompt_cache_key", resolution.ConversationSource)
+}
+
 func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -1534,6 +1549,29 @@ func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T)
 	require.Equal(t, "application/json", req.Header.Get("Accept"))
 	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 	require.NotEmpty(t, req.Header.Get("Session_Id"))
+}
+
+func TestOpenAIBuildUpstreamRequestOAuthCompatPromptCacheKeyOverridesClientSessionHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-session-123")
+	c.Set(openAICompatUpstreamSessionKey, "compat_cc_shared")
+	c.Set("api_key", &APIKey{ID: 42})
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5"}`), "token", false, "compat_cc_shared", false)
+	require.NoError(t, err)
+
+	expected := isolateOpenAISessionID(42, "compat_cc_shared")
+	require.Equal(t, expected, req.Header.Get("Session_Id"))
+	require.Equal(t, expected, req.Header.Get("Conversation_Id"))
 }
 
 func TestOpenAIBuildUpstreamRequestPreservesCompactPathForAPIKeyBaseURL(t *testing.T) {

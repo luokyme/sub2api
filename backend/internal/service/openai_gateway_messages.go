@@ -165,6 +165,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return nil, fmt.Errorf("remarshal after codex transform: %w", err)
 		}
 	}
+	if compatPromptCacheInjected && account.Type == AccountTypeOAuth && c != nil && promptCacheKey != "" {
+		c.Set(openAICompatUpstreamSessionKey, promptCacheKey)
+	}
 	if account.Type == AccountTypeOAuth {
 		s.debugLogGatewaySnapshot("OPENAI_COMPAT_UPSTREAM_FORWARD", http.Header(upstreamHeaderPreview(c)), responsesBody, map[string]string{
 			"upstream_model": upstreamModel,
