@@ -595,20 +595,15 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	}
 
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
-	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
+	promptCacheKey := h.gatewayService.ExtractPromptCacheKey(c, body)
 
 	// Anthropic 格式的请求在 metadata.user_id 中携带 session 标识，
 	// 而非 OpenAI 的 session_id/conversation_id headers。
-	// 从中派生 sessionHash（sticky session）和 promptCacheKey（upstream cache）。
-	if sessionHash == "" || promptCacheKey == "" {
+	// 仅用其派生 sessionHash（sticky session）；promptCacheKey 保持给 compat 层按稳定前缀生成。
+	if sessionHash == "" {
 		if userID := strings.TrimSpace(gjson.GetBytes(body, "metadata.user_id").String()); userID != "" {
 			seed := reqModel + "-" + userID
-			if promptCacheKey == "" {
-				promptCacheKey = service.GenerateSessionUUID(seed)
-			}
-			if sessionHash == "" {
-				sessionHash = service.DeriveSessionHashFromSeed(seed)
-			}
+			sessionHash = service.DeriveSessionHashFromSeed(seed)
 		}
 	}
 

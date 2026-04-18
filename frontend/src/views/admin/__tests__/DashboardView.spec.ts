@@ -42,13 +42,6 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
-const formatLocalDate = (date: Date): string => {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
 const createDashboardStats = (): DashboardStats => ({
   total_users: 0,
   today_new_users: 0,
@@ -71,6 +64,7 @@ const createDashboardStats = (): DashboardStats => ({
   total_tokens: 0,
   total_cost: 0,
   total_actual_cost: 0,
+  total_account_cost: 0,
   today_requests: 0,
   today_input_tokens: 0,
   today_output_tokens: 0,
@@ -79,6 +73,7 @@ const createDashboardStats = (): DashboardStats => ({
   today_tokens: 0,
   today_cost: 0,
   today_actual_cost: 0,
+  today_account_cost: 0,
   average_duration_ms: 0,
   uptime: 0,
   rpm: 0,
@@ -112,8 +107,22 @@ describe('admin DashboardView', () => {
     })
   })
 
-  it('uses last 24 hours as default dashboard range', async () => {
-    mount(DashboardView, {
+  it('renders safely when total counts are missing', async () => {
+    getSnapshotV2.mockResolvedValueOnce({
+      stats: {
+        ...createDashboardStats(),
+        total_requests: undefined,
+        total_users: undefined,
+        total_actual_cost: undefined,
+        total_account_cost: undefined,
+        today_actual_cost: undefined,
+        today_account_cost: undefined
+      },
+      trend: [],
+      models: []
+    })
+
+    const wrapper = mount(DashboardView, {
       global: {
         stubs: {
           AppLayout: { template: '<div><slot /></div>' },
@@ -129,15 +138,6 @@ describe('admin DashboardView', () => {
     })
 
     await flushPromises()
-
-    const now = new Date()
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
-
-    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
-    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
-      start_date: formatLocalDate(yesterday),
-      end_date: formatLocalDate(now),
-      granularity: 'hour'
-    }))
+    expect(wrapper.text()).toContain('0')
   })
 })

@@ -77,3 +77,69 @@ func TestDeriveCompatPromptCacheKey_UsesResolvedSparkFamily(t *testing.T) {
 	require.NotEmpty(t, k1)
 	require.Equal(t, k1, k2, "resolved spark family should derive a stable compat cache key")
 }
+
+func TestDeriveAnthropicCompatPromptCacheKey_StableAcrossLaterTurns(t *testing.T) {
+	base := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"x-anthropic-billing-header: test"},{"type":"text","text":"You are helpful."}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"Hello"}]`)},
+		},
+	}
+	extended := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"x-anthropic-billing-header: another"},{"type":"text","text":"You are helpful."}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"Hello"}]`)},
+			{Role: "assistant", Content: mustRawJSON(t, `[{"type":"text","text":"Hi there!"}]`)},
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"How are you?"}]`)},
+		},
+	}
+
+	k1 := deriveAnthropicCompatPromptCacheKey(base, "gpt-5.4")
+	k2 := deriveAnthropicCompatPromptCacheKey(extended, "gpt-5.4")
+	require.Equal(t, k1, k2, "anthropic compat cache key should stay stable across later turns")
+	require.NotEmpty(t, k1)
+}
+
+func TestDeriveAnthropicCompatPromptCacheKey_DiffersAcrossSessions(t *testing.T) {
+	req1 := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"You are helpful."}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"Question A"}]`)},
+		},
+	}
+	req2 := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"You are helpful."}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"Question B"}]`)},
+		},
+	}
+
+	k1 := deriveAnthropicCompatPromptCacheKey(req1, "gpt-5.4")
+	k2 := deriveAnthropicCompatPromptCacheKey(req2, "gpt-5.4")
+	require.NotEqual(t, k1, k2, "different first user messages should yield different anthropic compat keys")
+}
+
+func TestDeriveAnthropicCompatPromptCacheKey_IgnoresReminderNoise(t *testing.T) {
+	req1 := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"You are helpful."}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"<system-reminder>\nIgnore me\n</system-reminder>"},{"type":"text","text":"Hello"}]`)},
+		},
+	}
+	req2 := &apicompat.AnthropicRequest{
+		Model:  "claude-opus-4-6",
+		System: mustRawJSON(t, `[{"type":"text","text":"You are helpful."}]`),
+		Messages: []apicompat.AnthropicMessage{
+			{Role: "user", Content: mustRawJSON(t, `[{"type":"text","text":"Hello"}]`)},
+		},
+	}
+
+	k1 := deriveAnthropicCompatPromptCacheKey(req1, "gpt-5.4")
+	k2 := deriveAnthropicCompatPromptCacheKey(req2, "gpt-5.4")
+	require.Equal(t, k1, k2)
+}

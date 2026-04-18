@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -343,6 +345,7 @@ type OpenAIGatewayService struct {
 	openaiWSRetryMetrics  openAIWSRetryMetrics
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle *accountWriteThrottle
+	debugGatewayBodyFile  atomic.Pointer[os.File]
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -399,6 +402,9 @@ func NewOpenAIGatewayService(
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
+	if path := strings.TrimSpace(os.Getenv("SUB2API_DEBUG_GATEWAY_BODY")); path != "" {
+		svc.initDebugGatewayBodyFile(path)
+	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
 }
@@ -421,6 +427,68 @@ func (s *OpenAIGatewayService) IsModelRestricted(ctx context.Context, groupID in
 
 // ResolveChannelMappingAndRestrict 解析渠道映射。
 // 模型限制检查已移至调度阶段，restricted 始终返回 false。
+func (s *OpenAIGatewayService) debugLogGatewaySnapshot(tag string, headers http.Header, body []byte, extra map[string]string) {
+	f := s.debugGatewayBodyFile.Load()
+	if f == nil {
+		return
+	}
+
+	var buf strings.Builder
+	ts := time.Now().Format("2006-01-02 15:04:05.000")
+	fmt.Fprintf(&buf, "\n========== [%s] %s ==========\n", ts, tag)
+	if len(extra) > 0 {
+		fmt.Fprint(&buf, "--- context ---\n")
+		extraKeys := make([]string, 0, len(extra))
+		for k := range extra {
+			extraKeys = append(extraKeys, k)
+		}
+		sort.Strings(extraKeys)
+		for _, k := range extraKeys {
+			fmt.Fprintf(&buf, "  %s: %s\n", k, extra[k])
+		}
+	}
+	fmt.Fprint(&buf, "--- headers ---\n")
+	for _, k := range sortHeadersByWireOrder(headers) {
+		for _, v := range headers[k] {
+			fmt.Fprintf(&buf, "  %s: %s\n", k, safeHeaderValueForLog(k, v))
+		}
+	}
+	fmt.Fprint(&buf, "--- body ---\n")
+	if len(body) == 0 {
+		fmt.Fprint(&buf, "  (empty)\n")
+	} else {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, body, "  ", "  ") == nil {
+			fmt.Fprintf(&buf, "  %s\n", pretty.Bytes())
+		} else {
+			fmt.Fprintf(&buf, "  %s\n", body)
+		}
+	}
+	_, _ = f.WriteString(buf.String())
+}
+
+func (s *OpenAIGatewayService) initDebugGatewayBodyFile(path string) {
+	if parseDebugEnvBool(path) {
+		path = debugGatewayBodyDefaultFilename
+	}
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		path = filepath.Join(path, debugGatewayBodyDefaultFilename)
+	}
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			slog.Error("failed to create gateway debug log directory", "dir", dir, "error", err)
+			return
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		slog.Error("failed to open gateway debug log file", "path", path, "error", err)
+		return
+	}
+	s.debugGatewayBodyFile.Store(f)
+	slog.Info("gateway debug logging enabled", "path", path)
+}
+
 func (s *OpenAIGatewayService) ResolveChannelMappingAndRestrict(ctx context.Context, groupID *int64, model string) (ChannelMappingResult, bool) {
 	if s.channelService == nil {
 		return ChannelMappingResult{MappedModel: model}, false
@@ -1103,20 +1171,14 @@ func isOpenAITransientProcessingError(upstreamStatusCode int, upstreamMsg string
 	return match(string(upstreamBody))
 }
 
-// ExtractSessionID extracts the raw session ID from headers or body without hashing.
-// Used by ForwardAsAnthropic to pass as prompt_cache_key for upstream cache.
-func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) string {
-	if c == nil {
+// ExtractPromptCacheKey extracts the explicit prompt_cache_key from the body.
+// Session signals are resolved independently and must not be mixed into the
+// shared prompt-cache namespace.
+func (s *OpenAIGatewayService) ExtractPromptCacheKey(_ *gin.Context, body []byte) string {
+	if len(body) == 0 {
 		return ""
 	}
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
-	}
-	if sessionID == "" && len(body) > 0 {
-		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	}
-	return sessionID
+	return strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 }
 
 // GenerateSessionHash generates a sticky-session hash for OpenAI requests.
@@ -1124,20 +1186,14 @@ func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) str
 // Priority:
 //  1. Header: session_id
 //  2. Header: conversation_id
-//  3. Body:   prompt_cache_key (opencode)
+//  3. Header: X-Claude-Code-Session-Id
 //  4. Body:   content-based fallback (model + system + tools + first user message)
 func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) string {
 	if c == nil {
 		return ""
 	}
 
-	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
-	}
-	if sessionID == "" && len(body) > 0 {
-		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	}
+	sessionID := resolveOpenAIWSSessionHeaders(c).SessionID
 	if sessionID == "" && len(body) > 0 {
 		sessionID = deriveOpenAIContentSessionSeed(body)
 	}
@@ -1151,7 +1207,8 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 }
 
 // GenerateSessionHashWithFallback 先按常规信号生成会话哈希；
-// 当未携带 session_id/conversation_id/prompt_cache_key 时，使用 fallbackSeed 生成稳定哈希。
+// 当未携带 session_id/conversation_id/X-Claude-Code-Session-Id 时，
+// 使用 fallbackSeed 生成稳定哈希。
 // 该方法用于 WS ingress，避免会话信号缺失时发生跨账号漂移。
 func (s *OpenAIGatewayService) GenerateSessionHashWithFallback(c *gin.Context, body []byte, fallbackSeed string) string {
 	sessionHash := s.GenerateSessionHash(c, body)
@@ -3204,20 +3261,24 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 		apiKeyID := getAPIKeyIDFromContext(c)
+		sessionResolution := resolveOpenAIWSSessionHeaders(c)
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", codexCLIVersion)
 			}
-			compactSession := resolveOpenAICompactSessionID(c)
-			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, compactSession))
+			if sessionResolution.SessionID == "" {
+				sessionResolution.SessionID = resolveOpenAICompactSessionID(c)
+				sessionResolution.SessionSource = "compact_session_fallback"
+			}
 		} else {
 			req.Header.Set("accept", "text/event-stream")
 		}
-		if promptCacheKey != "" {
-			isolated := isolateOpenAISessionID(apiKeyID, promptCacheKey)
-			req.Header.Set("conversation_id", isolated)
-			req.Header.Set("session_id", isolated)
+		if sessionResolution.SessionID != "" {
+			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, sessionResolution.SessionID))
+		}
+		if sessionResolution.ConversationID != "" {
+			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, sessionResolution.ConversationID))
 		}
 	}
 

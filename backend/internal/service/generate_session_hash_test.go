@@ -797,6 +797,126 @@ func TestGenerateSessionHash_CacheControlOverridesSessionContext(t *testing.T) {
 	require.Equal(t, h1, h2, "cache_control ephemeral has higher priority, SessionContext should not affect result")
 }
 
+func TestGenerateSessionHash_CacheControlStableAcrossLaterTurns(t *testing.T) {
+	svc := &GatewayService{}
+
+	base := &ParsedRequest{
+		System: []any{
+			map[string]any{
+				"type":          "text",
+				"text":          "You are Claude Code, Anthropic's official CLI for Claude.",
+				"cache_control": map[string]any{"type": "ephemeral"},
+			},
+		},
+		HasSystem: true,
+		Messages: []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":          "text",
+						"text":          "hello",
+						"cache_control": map[string]any{"type": "ephemeral"},
+					},
+				},
+			},
+		},
+		SessionContext: &SessionContext{
+			ClientIP:  "1.1.1.1",
+			UserAgent: "ua1",
+			APIKeyID:  100,
+		},
+	}
+	extended := &ParsedRequest{
+		System:    base.System,
+		HasSystem: true,
+		Messages: []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":          "text",
+						"text":          "hello",
+						"cache_control": map[string]any{"type": "ephemeral"},
+					},
+				},
+			},
+			map[string]any{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{"type": "text", "text": "hi there"},
+				},
+			},
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":          "text",
+						"text":          "how are you?",
+						"cache_control": map[string]any{"type": "ephemeral"},
+					},
+				},
+			},
+		},
+		SessionContext: &SessionContext{
+			ClientIP:  "2.2.2.2",
+			UserAgent: "ua2",
+			APIKeyID:  200,
+		},
+	}
+
+	h1 := svc.GenerateSessionHash(base)
+	h2 := svc.GenerateSessionHash(extended)
+	require.Equal(t, h1, h2, "cache_control-derived hash should stay stable across later turns")
+}
+
+func TestGenerateSessionHash_CacheControlDifferentFirstUserChangesHash(t *testing.T) {
+	svc := &GatewayService{}
+
+	parsed1 := &ParsedRequest{
+		System: []any{
+			map[string]any{
+				"type":          "text",
+				"text":          "You are Claude Code, Anthropic's official CLI for Claude.",
+				"cache_control": map[string]any{"type": "ephemeral"},
+			},
+		},
+		HasSystem: true,
+		Messages: []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":          "text",
+						"text":          "question A",
+						"cache_control": map[string]any{"type": "ephemeral"},
+					},
+				},
+			},
+		},
+	}
+	parsed2 := &ParsedRequest{
+		System:    parsed1.System,
+		HasSystem: true,
+		Messages: []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":          "text",
+						"text":          "question B",
+						"cache_control": map[string]any{"type": "ephemeral"},
+					},
+				},
+			},
+		},
+	}
+
+	h1 := svc.GenerateSessionHash(parsed1)
+	h2 := svc.GenerateSessionHash(parsed2)
+	require.NotEqual(t, h1, h2, "different first cache-controlled user prompts should yield different hashes")
+}
+
 // ============ 边界情况 ============
 
 func TestGenerateSessionHash_EmptyMessages(t *testing.T) {

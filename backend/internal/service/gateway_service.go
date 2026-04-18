@@ -792,21 +792,35 @@ func (s *GatewayService) extractCacheableContent(parsed *ParsedRequest) string {
 	}
 	systemText := builder.String()
 
-	// 检查 messages 中的 cacheable 内容
+	// 检查 messages 中的 cacheable 内容。只使用首个带 cache_control
+	// 的 user 前缀，避免后续轮次消息增长导致会话标识漂移。
+	firstUserCaptured := false
 	for _, msg := range parsed.Messages {
 		if msgMap, ok := msg.(map[string]any); ok {
+			role, _ := msgMap["role"].(string)
+			if strings.TrimSpace(role) != "user" {
+				continue
+			}
 			if msgContent, ok := msgMap["content"].([]any); ok {
 				for _, part := range msgContent {
 					if partMap, ok := part.(map[string]any); ok {
 						if cc, ok := partMap["cache_control"].(map[string]any); ok {
 							if cc["type"] == "ephemeral" {
-								return s.extractTextFromContent(msgMap["content"])
+								if !firstUserCaptured {
+									_, _ = builder.WriteString(s.extractTextFromContent(msgMap["content"]))
+									firstUserCaptured = true
+								}
+								break
 							}
 						}
 					}
 				}
 			}
 		}
+	}
+
+	if firstUserCaptured {
+		return builder.String()
 	}
 
 	return systemText

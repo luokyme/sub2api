@@ -263,7 +263,7 @@ type openAIWSSessionHeaderResolution struct {
 	ConversationSource string
 }
 
-func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAIWSSessionHeaderResolution {
+func resolveOpenAIWSSessionHeaders(c *gin.Context) openAIWSSessionHeaderResolution {
 	resolution := openAIWSSessionHeaderResolution{
 		SessionSource:      "none",
 		ConversationSource: "none",
@@ -281,13 +281,15 @@ func resolveOpenAIWSSessionHeaders(c *gin.Context, promptCacheKey string) openAI
 				resolution.SessionSource = "header_conversation_id"
 			}
 		}
-	}
-
-	cacheKey := strings.TrimSpace(promptCacheKey)
-	if cacheKey != "" {
-		if resolution.SessionID == "" {
-			resolution.SessionID = cacheKey
-			resolution.SessionSource = "prompt_cache_key"
+		if claudeSessionID := strings.TrimSpace(c.Request.Header.Get("X-Claude-Code-Session-Id")); claudeSessionID != "" {
+			if resolution.SessionID == "" {
+				resolution.SessionID = claudeSessionID
+				resolution.SessionSource = "header_x_claude_code_session_id"
+			}
+			if resolution.ConversationID == "" {
+				resolution.ConversationID = claudeSessionID
+				resolution.ConversationSource = "header_x_claude_code_session_id"
+			}
 		}
 	}
 	return resolution
@@ -682,7 +684,7 @@ func dropOpenAIWSPayloadKey(payload map[string]any, key string, removed *[]strin
 
 // applyOpenAIWSRetryPayloadStrategy 在 WS 连续失败时仅移除无语义字段，
 // 避免重试成功却改变原始请求语义。
-// 注意：prompt_cache_key 不应在重试中移除；它常用于会话稳定标识（session_id 兜底）。
+// 注意：prompt_cache_key 属于共享前缀缓存信号，不应在重试中移除。
 func applyOpenAIWSRetryPayloadStrategy(payload map[string]any, attempt int) (strategy string, removedKeys []string) {
 	if len(payload) == 0 {
 		return "empty", nil
@@ -1118,7 +1120,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	headers := make(http.Header)
 	headers.Set("authorization", "Bearer "+token)
 
-	sessionResolution := resolveOpenAIWSSessionHeaders(c, promptCacheKey)
+	sessionResolution := resolveOpenAIWSSessionHeaders(c)
 	if c != nil && c.Request != nil {
 		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" {
 			headers.Set("accept-language", v)

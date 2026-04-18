@@ -198,6 +198,7 @@ func TestOpenAIGatewayService_Forward_WSv2_RewriteModelAndToolCallsOnCompletedEv
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-session-123")
 	groupID := int64(3001)
 	c.Set("api_key", &APIKey{GroupID: &groupID})
 
@@ -541,13 +542,15 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testi
 	}
 }
 
-func TestOpenAIGatewayService_Forward_WSv2_HeaderSessionFallbackFromPromptCacheKey(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2_ExplicitSessionHeadersWinOverPromptCacheKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
+	c.Request.Header.Set("session_id", "sess-explicit-123")
+	c.Request.Header.Set("conversation_id", "conv-explicit-123")
 
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
@@ -599,9 +602,10 @@ func TestOpenAIGatewayService_Forward_WSv2_HeaderSessionFallbackFromPromptCacheK
 	require.NotNil(t, result)
 	require.Equal(t, "resp_prompt_cache_key", result.RequestID)
 
-	// OAuth 账号的 session_id 应被 isolateOpenAISessionID 隔离（apiKeyID=0，未在 context 设置）。
-	require.Equal(t, isolateOpenAISessionID(0, "pcache_123"), captureDialer.lastHeaders.Get("session_id"))
-	require.Empty(t, captureDialer.lastHeaders.Get("conversation_id"))
+	// OAuth 账号的显式会话信号应被 isolateOpenAISessionID 隔离；
+	// prompt_cache_key 仅保留为共享前缀缓存信号，不再充当 session 兜底。
+	require.Equal(t, isolateOpenAISessionID(0, "sess-explicit-123"), captureDialer.lastHeaders.Get("session_id"))
+	require.Equal(t, isolateOpenAISessionID(0, "conv-explicit-123"), captureDialer.lastHeaders.Get("conversation_id"))
 	require.NotNil(t, captureConn.lastWrite)
 	require.True(t, gjson.Get(requestToJSONString(captureConn.lastWrite), "stream").Exists())
 }

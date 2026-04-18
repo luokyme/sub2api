@@ -20,10 +20,27 @@ import (
 	"go.uber.org/zap"
 )
 
-// ForwardAsAnthropic accepts an Anthropic Messages request body, converts it
-// to OpenAI Responses API format, forwards to the OpenAI upstream, and converts
-// the response back to Anthropic Messages format. This enables Claude Code
-// clients to access OpenAI models through the standard /v1/messages endpoint.
+func upstreamHeaderPreview(c *gin.Context) map[string][]string {
+	headers := map[string][]string{}
+	if c != nil && c.Request != nil {
+		for key, values := range c.Request.Header {
+			lowerKey := strings.ToLower(key)
+			if openaiAllowedHeaders[lowerKey] {
+				copied := append([]string(nil), values...)
+				headers[key] = copied
+			}
+		}
+	}
+	sessionResolution := resolveOpenAIWSSessionHeaders(c)
+	if sessionResolution.ConversationID != "" && len(headers["conversation_id"]) == 0 {
+		headers["conversation_id"] = []string{sessionResolution.ConversationID}
+	}
+	if sessionResolution.SessionID != "" && len(headers["session_id"]) == 0 {
+		headers["session_id"] = []string{sessionResolution.SessionID}
+	}
+	return headers
+}
+
 func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	ctx context.Context,
 	c *gin.Context,
@@ -33,6 +50,12 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
+	if c != nil {
+		s.debugLogGatewaySnapshot("OPENAI_COMPAT_CLIENT_ORIGINAL", c.Request.Header, body, map[string]string{
+			"path":    "/v1/messages",
+			"account": fmt.Sprintf("%d(%s)", account.ID, account.Name),
+		})
+	}
 
 	// 1. Parse Anthropic request
 	var anthropicReq apicompat.AnthropicRequest
@@ -44,7 +67,19 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	normalizedModel := anthropicReq.Model
 	clientStream := anthropicReq.Stream // client's original stream preference
 
-	// 2. Convert Anthropic → Responses
+	// 2. Resolve model mapping early so compat prompt_cache_key injection can
+	// derive a stable seed from the final upstream model family.
+	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+
+	promptCacheKey = strings.TrimSpace(promptCacheKey)
+	compatPromptCacheInjected := false
+	if promptCacheKey == "" && account.Type == AccountTypeOAuth && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
+		promptCacheKey = deriveAnthropicCompatPromptCacheKey(&anthropicReq, upstreamModel)
+		compatPromptCacheInjected = promptCacheKey != ""
+	}
+
+	// 3. Convert Anthropic → Responses
 	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
@@ -61,18 +96,25 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 3. Model mapping
-	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	billingModel = resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
+	upstreamModel = normalizeOpenAIModelForUpstream(account, billingModel)
 	responsesReq.Model = upstreamModel
 
-	logger.L().Debug("openai messages: model mapping applied",
+	logFields := []zap.Field{
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
 		zap.String("normalized_model", normalizedModel),
 		zap.String("billing_model", billingModel),
 		zap.String("upstream_model", upstreamModel),
 		zap.Bool("stream", isStream),
-	)
+	}
+	if compatPromptCacheInjected {
+		logFields = append(logFields,
+			zap.Bool("compat_prompt_cache_key_injected", true),
+			zap.String("compat_prompt_cache_key_sha256", hashSensitiveValueForLog(promptCacheKey)),
+		)
+	}
+	logger.L().Debug("openai messages: model mapping applied", logFields...)
 
 	// 4. Marshal Responses request body, then apply OAuth codex transform
 	responsesBody, err := json.Marshal(responsesReq)
@@ -123,6 +165,13 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return nil, fmt.Errorf("remarshal after codex transform: %w", err)
 		}
 	}
+	if account.Type == AccountTypeOAuth {
+		s.debugLogGatewaySnapshot("OPENAI_COMPAT_UPSTREAM_FORWARD", http.Header(upstreamHeaderPreview(c)), responsesBody, map[string]string{
+			"upstream_model": upstreamModel,
+			"billing_model":  billingModel,
+			"original_model": originalModel,
+		})
+	}
 
 	// For API key accounts (including OpenAI-compatible upstream gateways),
 	// ensure promptCacheKey is also propagated via the request body so that
@@ -156,13 +205,6 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, isStream, promptCacheKey, false)
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
-	}
-
-	// Override session_id with a deterministic UUID derived from the isolated
-	// session key, ensuring different API keys produce different upstream sessions.
-	if promptCacheKey != "" {
-		apiKeyID := getAPIKeyIDFromContext(c)
-		upstreamReq.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey)))
 	}
 
 	// 7. Send request

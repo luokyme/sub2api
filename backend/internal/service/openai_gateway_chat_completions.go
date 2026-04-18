@@ -178,10 +178,6 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	if promptCacheKey != "" {
-		upstreamReq.Header.Set("session_id", generateSessionUUID(promptCacheKey))
-	}
-
 	// 7. Send request
 	proxyURL := ""
 	if account.Proxy != nil {

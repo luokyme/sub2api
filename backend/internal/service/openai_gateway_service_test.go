@@ -172,8 +172,9 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 		t.Fatalf("expected different hashes for different keys")
 	}
 
-	// 3) prompt_cache_key used when both headers absent
+	// 3) X-Claude-Code-Session-Id used when OpenAI session headers absent
 	c.Request.Header.Del("conversation_id")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-session-789")
 	h3 := svc.GenerateSessionHash(c, bodyWithKey)
 	if h3 == "" {
 		t.Fatalf("expected non-empty hash")
@@ -183,10 +184,39 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	}
 
 	// 4) empty when no signals
+	c.Request.Header.Del("X-Claude-Code-Session-Id")
 	h4 := svc.GenerateSessionHash(c, []byte(`{}`))
 	if h4 != "" {
 		t.Fatalf("expected empty hash when no signals")
 	}
+}
+
+func TestOpenAIGatewayService_ExtractPromptCacheKey_UsesBodyOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("session_id", "sess-header")
+	c.Request.Header.Set("conversation_id", "conv-header")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-header")
+
+	svc := &OpenAIGatewayService{}
+	require.Equal(t, "pcache_123", svc.ExtractPromptCacheKey(c, []byte(`{"prompt_cache_key":"pcache_123"}`)))
+	require.Empty(t, svc.ExtractPromptCacheKey(c, []byte(`{}`)))
+}
+
+func TestResolveOpenAIWSSessionHeaders_UsesClaudeCodeHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-session-123")
+
+	resolution := resolveOpenAIWSSessionHeaders(c)
+	require.Equal(t, "claude-session-123", resolution.SessionID)
+	require.Equal(t, "claude-session-123", resolution.ConversationID)
+	require.Equal(t, "header_x_claude_code_session_id", resolution.SessionSource)
+	require.Equal(t, "header_x_claude_code_session_id", resolution.ConversationSource)
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {
